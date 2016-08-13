@@ -38,7 +38,7 @@
 #include <linux/futex.h>
 #endif /* !WINDOWS */
 
-#include <unistd.h>
+//#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
@@ -69,7 +69,7 @@
 #ifdef DEBUG_PROFILE
 #include "prof.h"
 #else
-#define DECL_PROF_FUNC int __attribute((unused)) profile_dummy
+#define DECL_PROF_FUNC
 #endif
 
 
@@ -159,27 +159,40 @@ struct sep
 	};
 };
 
+// 这个结构原本占173字节，但要对齐，实占176字节
 struct btree
 {
-	/* Seperator */
-	sep s;
+    // 这个可以是自己结构的，也可以上前面16字节处开始的btree的
+    // 这里占了16字节
+    sep s; // +0
 
-	__extension__ union
-	{
-		slist list;
-		dlist list2;
-		void *data;
+    // 这里占了153字节
+    __extension__ union // +16
+    {
+        // 这里list占4字节，list2占8字节，data占4字节
+        // 但因为这里是union，因此这3个总的来说是占8字节！
+        slist list;  // +16
+        dlist list2; // +16
+        void *data;  // +16
 
-		__extension__ struct
-		{
-			btree *parent;
-			unsigned bsize[BT_MAX + 1];
-			char prev[BT_MAX + 1];
-			btree *ptr[BT_MAX];
-		};
-	};
+        // 这个结构占了153个字节，上面3个成员占8字节
+        // 但由于是union，总的来说占153字节，且parent
+        // 的位置就是list，data的位置，list2的next位置
+        // 而bsize[0]位置则是list2的prev的位置，而且从
+        // bsize[1]和前一个btree的sep的bs_offset同一位置,
+        // bsize[2]和前一个btree的sep的size同一位置
+        __extension__ struct // +16
+        {
+            btree *parent; // +16
+            unsigned bsize[BT_MAX + 1]; // +20
+            char prev[BT_MAX + 1];
+            btree *ptr[BT_MAX];
+        };
+    };
+
+    // 这里占了4字节
 #ifndef __x86_64__
-	unsigned pad;
+    unsigned pad;
 #endif
 };
 
@@ -379,7 +392,7 @@ struct atls
 #endif
 
 #ifndef DEBUG_ALLOC
-#define always_inline inline __attribute__((always_inline))
+#define always_inline __forceinline
 #else
 #define always_inline
 #endif
@@ -917,6 +930,10 @@ static inline void set_sep(btree *b, int size, btree *bo)
 	unsigned offset = bo->s.bs_offset & ~15;
 
 	/* Store split block offset + size + used indicators */
+    // 别看这里是操作b的成员，实际上是操作bo，bo->bsize被改了！！！！
+    // bo的位置在前面，b的位置在bo+16，因此offset是16
+    // 因此这里修改bs_offset,size实际上是修改bo->bsize[1,2...]
+    // 具体修改的起始是bsize[1]还是哪个，以实际的offset为准
 	b->s.bs_offset = offset + ((uintptr_t) b - (uintptr_t) bo);
 	b->s.size = size;
 }

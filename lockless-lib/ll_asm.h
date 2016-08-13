@@ -246,7 +246,18 @@ static inline size_t ffsq(unsigned long long x)
 {
 	unsigned long result;
 	__assume(x);
-	_BitScanForward64(&result, x);
+
+    unsigned long long v = 1UL;
+    for (int i = 0; i < 64; i++)
+    {
+        unsigned long long mask = (v << i);
+        if (mask & x)
+        {
+            result = i;
+            break;
+        }
+    }
+    //_BitScanForward64(&result, x);
 
 	return result;
 }
@@ -255,7 +266,18 @@ static inline size_t fflq(unsigned long long x)
 {
 	unsigned long result;
 	__assume(x);
-	_BitScanReverse64(&result, x);
+	
+    unsigned long long v = 1UL;
+    for (int i = 64 - 1; i >= 0; i--)
+    {
+        unsigned long long mask = (v << i);
+        if (mask & x)
+        {
+            result = i;
+            break;
+        }
+    }
+    //_BitScanReverse64(&result, x);
 
 	return result;
 }
