@@ -163,7 +163,9 @@ struct sep
 struct btree
 {
     // 这个可以是自己结构的，也可以上前面16字节处开始的btree的
-    // 这里占了16字节
+    // 这里占了16字节，且这个sep的bs_offset成员指示了这个btree
+    // 结构所在地址加上bs_offset偏移就是data的首地址，而size则
+    // 是这个data指向的内存区域的大小！！！！！！
     sep s; // +0
 
     // 这里占了153字节
@@ -1418,8 +1420,10 @@ static void clear_fast(atls *tl)
 	/* Anything to do? */
 	while (mask)
 	{
+        // 从低位开始找，直到找到第一个1的位置，0-63之间
 		size_t n = ffsq(mask);
 
+        // p就是fl[n]，是表头，p->next就是slist，某个b树节点的list即data
 		slist *p = &tl->fl[n];
 
 		/* Get mask bit */
@@ -3900,6 +3904,7 @@ static always_inline void *split_node(atls *tl, btree *b, size_t t_size, size_t 
 	}
 
 	/* Update local size */
+    // 65488变成了976，且原65488-976就是剩下的大小
 	b->s.size = msize;
 
 	/* Create middle seperator */
@@ -4203,6 +4208,10 @@ static void *slow_alloc_aux(atls *tl, size_t size)
 #else
 
 /* Versions optimized for 32bit */
+// fast_alloc函数是根据传进来的大小，用size2fl对应到当前线程本地缓存
+// 中的快速链表fl，如果找到了，就找到了可用的b树节点，然后返回b->data
+// 的地址就是分配好的内存了，这个过程非常快。这个函数是分配的大小在
+// 512Byte < size < 128MB时调用的，且size2fl函数将size对应到0-63之间
 static always_inline void *fast_alloc(atls *tl, size_t size)
 {
 	size_t n = size2fl(size);
@@ -4743,6 +4752,7 @@ static void *zalloc(atls *tl, size_t size)
 
 	test_all(tl);
 
+    // 原来的p->data是有值的，这里清0，返回一个干净的分配好的内存！
 	return memset(p, 0, size - 8);
 }
 
