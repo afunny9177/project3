@@ -241,15 +241,22 @@ struct mallinfo
 #define FLG_LSIZE8	0x04
 #define FLG_SIZE8	0x08
 
+// b->bsize[0]的最低1字节是0，则是叶子结点
 static int b_leaf(btree *b);
 
+// 转成unsigned char*，如果b-bsize[loc]是0xFFFFABCD，这里取
 #define SEP_INDEX(b, loc, v) (((unsigned char *) &((b)->bsize[loc]))[v])
 
 /* Index into the zeroth int in bsize[] */
+// 这里是取b->bsize[0]的最低1个字节，如0xFFFFABCD中的CD
 #define b_start(b) SEP_INDEX(b, 0, 0)
+// 这里是取b->bsize[0]的第二低1个字节，如0xFFFFABCD中的AB
 #define b_pindex(b) SEP_INDEX(b, 0, 1)
+
+// 这里是把b->bsize（4个字节的）转成两个2字节的short数组，只改了bsize[0]的高位
 #define b_mask(b) (*(unsigned short*) &SEP_INDEX(b, 0, 2))
 
+// 这里是取b->bsize[loc]的最低1个字节，如0xFFFFABCD中的CD
 #define b_next(b, loc) SEP_INDEX(b, loc, 0)
 #define b_prev(b, loc) (b->prev[loc])
 #define b_last(b) b_prev(b, 0)
@@ -430,8 +437,10 @@ size_t llalloc_msize(void *p);
 void *llalloc_expand(void *p, size_t size);
 
 /* Hack - indirect calls to crt functions */
-int (* __callnewh)(size_t);
-int (* __newmode)(void);
+typedef int (* __callnewh_fun)(size_t);
+typedef int (* __newmode_fun)(void);
+__callnewh_fun __callnewh;
+__newmode_fun __newmode;
 #endif /* USE_DLL */
 
 void cfree(void *p);
@@ -922,7 +931,7 @@ static void btree_init(btree *b)
 {
 	/* Init header */
 	//b_start(b) = 0;
-	b_mask(b) = -1;
+	b_mask(b) = -1; // 注意这里-1只给了高位，低位是没有给值的！！
 	//b_pindex(b) = 0;
 	//b_last(b) = 0;
 }
@@ -1411,6 +1420,11 @@ static void test_fast_lists(atls *tl)
 #endif
 
 /* Clear fast-lists */
+// 这个clear_fast函数做了很了很多事，合并节点，初始化slab chunk
+// slab chunk有8M多，关联到了tls->slab相关成员那里了，在初始化
+// 时至少已经执行过split_node，这里又调用了fast_free，又调用了
+// fast_add，这样快速链表tls->fl成员的第N个元素就有值了，指向
+// 刚分割好的b树结构的list成员，且tls->f_mask中第N个位是1了！
 static void clear_fast(atls *tl)
 {
 	DECL_PROF_FUNC;
@@ -1418,9 +1432,12 @@ static void clear_fast(atls *tl)
 	u64b mask = tl->f_mask;
 
 	/* Anything to do? */
+    // 这里直接取tl->f_mast为mask，肯定是真
 	while (mask)
 	{
         // 从低位开始找，直到找到第一个1的位置，0-63之间
+        // 如果之前放进来的fl[40]有值，那ffsq(mask)就是40
+        // 当然如果fl[20]也有值，那就是20
 		size_t n = ffsq(mask);
 
         // p就是fl[n]，是表头，p->next就是slist，某个b树节点的list即data
@@ -1433,8 +1450,11 @@ static void clear_fast(atls *tl)
 		mask = ~mask;
 
 		/* Properly free everything in the list */
+        // p->next就是btree的list成员，也是data...
 		while (p->next)
 		{
+            // 这里是取出btree的list成员，且fl[n]本身指向list的next成员
+            // 一般都是空，取出的list成员，来到merge_node中，会做什么呢？
 			merge_node(tl, slist_rem(p));
 		}
 
@@ -1997,16 +2017,16 @@ static void *init_crt_funcs(void)
 	patch *p;
 	void *f;
 
-	HMODULE library = GetModuleHandle("MSVCR90.DLL");
+	HMODULE library = GetModuleHandle("MSVCR120.DLL");
 	if (!library) return NULL;
 
 	func_f = GetProcAddress(library, "_callnewh");
 	if (!func_f) return NULL;
-	__callnewh = (typeof(__callnewh)) func_f;
+	__callnewh = (__callnewh_fun) func_f;
 
 	func_f = GetProcAddress(library, "?_query_new_mode@@YAHXZ");
 	if (!func_f) return NULL;
-	__newmode = (typeof(__newmode)) func_f;
+	__newmode = (__newmode_fun) func_f;
 
 	for (p = patch_list; p->name; p++)
 	{
@@ -2142,8 +2162,8 @@ nomem:
 }
 
 #ifdef USE_DLL
-BOOL DllMain(HINSTANCE h, DWORD reason, LPVOID reserved);
-BOOL DllMain(HINSTANCE h, DWORD reason, LPVOID reserved)
+BOOL __stdcall DllMain(HINSTANCE h, DWORD reason, LPVOID reserved);
+BOOL __stdcall DllMain(HINSTANCE h, DWORD reason, LPVOID reserved)
 {
 	/* Silence compiler warnings */
 	(void) h;
@@ -2365,10 +2385,15 @@ static char btree_count(btree *b)
 
 static inline int btree_alloc(btree *b)
 {
+    // b->bsize[0]的高2位即short类型，从低到高位找第一个
+    // 是1的位的位置，即返回的loc在0-15之间！！！！！
 	int loc = ffsu(b_mask(b));
 
+    // loc是查找到的b->bsize[0]的高short类型中，0-15
+    // 这条语句就是把这个找到的位中1变为0
 	b_mask(b) &= ~(1 << loc);
 
+    // 返回的值在1-16之间
 	return loc + 1;
 }
 
@@ -2651,6 +2676,7 @@ static void btree_node_del(atls *tl, btree *b, int loc)
 
 static __pure inline btree *btree_search(atls *tl, unsigned ssize)
 {
+    // 查找的开始是tl->bheadp
 	btree *b = &tl->bheap;
 	size_t i = b_start(b);
 
@@ -2688,6 +2714,8 @@ static btree *btree_remove(atls *tl, unsigned ssize)
 /* Find space for node of size ssize */
 static btree *btree_find(atls *tl, unsigned ssize, int *ipv)
 {
+    // 这里返回的b应该不可能为空，因为tl->bheap.bsize[0]初始化为
+    // 最大值了，参考btree_init那里是给了-1值，无符号过来就是最大值
 	btree *b = btree_search(tl, ssize);
 	btree *bp = &tl->bheap;
 
@@ -2699,6 +2727,7 @@ static btree *btree_find(atls *tl, unsigned ssize, int *ipv)
 	}
 
 	/* Nothing in btree? */
+    // 如果是叶子结点（没有子结点）就返回这个叶子结点
 	if (b_leaf(b)) return bp;
 
 	/* We are larger than anything */
@@ -2949,6 +2978,9 @@ static void btree_node_insert(atls *tl, btree *b, int loc, unsigned ssize, btree
 	if (ssize & 0xff) errx(1, "ssize not clean\n");
 #endif
 
+    // 如果b->bsize[0]的高2位是0，则条件成立
+    // 其实就是b->bsize[0]小于65536！！！！
+    // 而tls->bheap.bsize[0]是0xFFFF0000的！！
 	if (!b_mask(b))
 	{
 		btree_node_insert_aux(tl, b, loc, ssize, node);
@@ -2957,8 +2989,11 @@ static void btree_node_insert(atls *tl, btree *b, int loc, unsigned ssize, btree
 	}
 
 	/* We have space - add it */
+    // b是查找到要插入到哪个后面的btree，n则是待插入的节点
+    // 一开始是0xFFFF0000，变成0xFFFE0000，返回的new是1
 	new = btree_alloc(b);
 
+    // b->bsize[loc]中的
 	next = b_next(b, loc);
 	b->bsize[new] = ssize + next;
 	b_prev(b, next) = new;
@@ -2976,9 +3011,11 @@ static void btree_insert(atls *tl, btree *n, size_t size)
 	int ip = 0;
 
 	/* Convert to internal size (upper 24bits of 32bit bsize) */
+    // 把b->s.size放大16倍，准备放到tls->bheap中的bsize, ptr记录起来
 	unsigned ssize = size * 16;
 
 	/* First find where to put it, splitting to make room */
+    // 这里只传了tl进去，没有伟n，说明是从tl->bheap中查找
 	btree *b = btree_find(tl, ssize, &ip);
 
 #ifdef DEBUG_ALLOC_SLOW
@@ -3237,6 +3274,7 @@ static freesb *slab_alloc_chunk(atls *tl)
 
 	freesb *fsb;
 
+    // 64KB * 65 >= 8MB！这个SLAB的大小有8MB多！！！
 	size_t alloc_amount = SLABSIZE * (SLABBMAX + 1);
 	size_t sbrk_end;
 
@@ -3313,6 +3351,7 @@ static freesb *slab_alloc_chunk(atls *tl)
 		alloc_amount += SLABSIZE - (sbrk_end & (SLABSIZE - 1));
 	}
 
+    // 分配了8MB的内存用于自由块slab
 	fsb = sbrk(alloc_amount);
 
 	if (fsb == MAP_FAILED)
@@ -3347,8 +3386,11 @@ static freesb *slab_alloc_chunk(atls *tl)
 	/* Fill in details */
 	for (i = 0; i < alloced; i++)
 	{
+        // 分配的8MB的内存，每个块就是128KB，即64 * 128KB
 		fsb->blocks[i] = shift(fsb, SLABSIZE * (i + 1));
 	}
+
+    // 分配的块的数量是64或63，每个块128KB（sbheader指针）
 	fsb->count = alloced;
 
 	return fsb;
@@ -3415,12 +3457,14 @@ static sbheader *slab_alloc_block(atls *tl)
 	/* Make sure we have empty blocks */
 	if (!tl->slab_chunk)
 	{
+        // 没有空间了或还没有空间，分配8MB的chunk
 		tl->slab_chunk = slab_alloc_chunk(tl);
 		if (!tl->slab_chunk) return NULL;
 	}
 
 	fsb = tl->slab_chunk;
 
+    // 如果8MB都在被使用，这里就会进来，清空tl->slab_chunk
 	if (!fsb->count)
 	{
 		sb = (sbheader *) fsb;
@@ -3513,6 +3557,8 @@ static sbheader *slab_create(atls *tl, dlist *slab, unsigned size)
 	/* Fill in details */
 	sb->tail = &tl->tail;
 
+    // tls->slab[i]（即传来的slab）本来是tls.slab[i]--->block.list
+    // 加入一个新的后就变成了tls.slab[i]--->new_block.list--->block.list
 	dlist_add(slab, &sb->list);
 
 	/* Already initialized? */
@@ -3627,12 +3673,17 @@ static void *slab_alloc_aux(atls *tl, dlist *slab)
 	DECL_PROF_FUNC;
 
 	/* Get sbheader */
+    // slab即tls->slab[i]，是一个双链表的头，slab->next指向的是最新
+    // 加进来的节点，不管这个节点是在第一个8MB的块里，还是第N个8MB的
+    // 因为这里是没有遍历整个链表的，只是取了next节点，返回的sb肯定不空
 	sbheader *sb = list_entry(sbheader, list, slab->next);
 
 	uintptr_t p = sb->first;
 
 	sb->used++;
 
+    // 如果sb指向的块被用完了，会goto done
+    // 就是把自己从链表中移除！！！！！！
 	if (!(p & 1))
 	{
 		sb->first = *(uintptr_t *) (void *) p;
@@ -3642,6 +3693,7 @@ static void *slab_alloc_aux(atls *tl, dlist *slab)
 	else
 	{
 		p--;
+        // 这里加上一个大小，就是分配空间一样！
 		sb->first += sb->size;
 		if (sb->first > sb->max)
 		{
@@ -3679,6 +3731,7 @@ static void *slab_alloc(atls *tl, size_t size)
 	slab = shift(&tl->slab[0], (nsize & ~15) / 2);
 #endif
 
+    // block被占满了，会删除链表，那下次来到这里就是真值，会从64个block中取一个新的！！！！
 	if (dlist_empty(slab)) return slab_alloc_nolist(size, slab, tl);
 
 	return slab_alloc_aux(tl, slab);
@@ -3699,6 +3752,7 @@ static void *slab_alloc_safe(atls *tl, size_t size)
 #ifdef __x86_64__
 	slab = shift(&tl->slab[0], size & ~15);
 #else
+    // 传进来的size最大只到512，计算后slab就是tl->slab[0-32]
 	slab = shift(&tl->slab[0], (size & ~15) / 2);
 #endif
 
@@ -4006,6 +4060,7 @@ static void merge_node(atls *tl, void *p)
 {
 	DECL_PROF_FUNC;
 
+    // 通过取出的list，得到所在btree的指针，其实p的地址-16字节就是
 	btree *b = CONTAINER(btree, data, p);
 	btree *bl = b, *br = shift(b, b->s.size);
 
@@ -4585,6 +4640,11 @@ static noinline void free_clear(atls *tl)
 	clear_fast(tl);
 }
 
+// free在lockless是DLL时有问题，因为lockless.dll加载之前就可能有malloc
+// 的调用，然后加载了lockless.dll后free替换了，那来到free时这里没有判断
+// 是替换前还是替换后分配的指针p，这里直接当成lockless管理的指针来处理
+// 特别是shift函数，人家此时没有btree这个东西，你还当成是，当然有问题了！
+// 如果是静态库的话，则没有这个问题，因为malloc,free等都是被替换了的！
 void PREFIX(free)(void *p)
 {
 	DECL_PROF_FUNC;
@@ -4628,15 +4688,39 @@ void PREFIX(free)(void *p)
 		/* Get block start */
 		mealloc *m = read_bs(b);
 
+        // windows下，unlikely用IsBadReadPtr测试访问地址
+       //if (IsBadReadPtr(m, sizeof(mealloc)))
+       //{
+       //    VirtualFree(p, 0, MEM_RELEASE);
+       //    return;
+       //}
+       //else if (IsBadReadPtr(m->tail, 4))
+       //{
+       //    VirtualFree(p, 0, MEM_RELEASE);
+       //    return;
+       //}
+      //  if (!bad)
+     //   {
+      //      bad = IsBadReadPtr(m->tail, 4);
+       // }
+
 		/* My tail = a local node */
-		if (unlikely(m->tail != &tl->tail))
-		{
+       // __try
+        {
+            if (unlikely(m->tail != &tl->tail))
+            {
 
-			/* Add to their queue, and let them deal with it */
-			prepend_queue(p, tl, &m->tail);
+                /* Add to their queue, and let them deal with it */
+                prepend_queue(p, tl, &m->tail);
 
-			return;
-		}
+                return;
+            }
+        }
+       //__except (1)
+        {
+            //VirtualFree(p, 0, MEM_RELEASE);
+          //  return;
+        }
 
 		/* Inlined version of fast_free() */
 		size = size2fl(size);

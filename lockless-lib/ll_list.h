@@ -83,6 +83,9 @@ static inline void dlist_init(dlist *d)
 }
 
 /* Adds "a" to start of dlist d */
+// 双向循环链表，tls->bl指向这个链表头，这个头的next指向最新
+// 开辟的内存块中的dlist节点，再next是次新，最终指回到头，如果
+// 用prev则相反，tls->bl的prev指向次新，然后是最新
 static inline void dlist_add(dlist *d, dlist *a)
 {
 	dlist *dn = d->next;

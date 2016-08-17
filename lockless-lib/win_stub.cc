@@ -86,12 +86,13 @@ __declspec(nothrow) void operator delete[](void* p, const std::nothrow_t&)
 }
 
 #ifdef USE_DLL
-
 extern "C"
 {
 	/* Hack - indirect calls to crt functions */
-	extern int (* __callnewh)(size_t);
-	extern int (* __newmode)(void);
+    typedef int (* __callnewh_fun)(size_t);
+    typedef int (* __newmode_fun)(void);
+	extern __callnewh_fun __callnewh;
+	extern __newmode_fun __newmode;
 }
 #define _newmode (__newmode())
 #define _callnewh __callnewh
@@ -113,7 +114,7 @@ int handle_oom(int size)
 		{
 			if (_callnewh(size)) return 1;
 		}
-		__except(EXCEPTION_EXECUTE_HANDLER)
+		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
 			/* Do nothing, and fail with ENOMEM below */
 		}

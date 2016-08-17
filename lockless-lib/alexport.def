@@ -1,4 +1,4 @@
-LIBRARY llalloc
+;LIBRARY llalloc
 EXPORTS
 	llallocfree
 	cfree
